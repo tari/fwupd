@@ -2463,8 +2463,6 @@ fu_common_get_esp_default (GError **error)
 		g_autofree gchar *type = fu_volume_get_id_type (vol);
 		if (type == NULL)
 			continue;
-		if (!fu_volume_is_internal (vol))
-			continue;
 		if (g_strcmp0 (type, "vfat") == 0)
 			g_ptr_array_add (volumes_vfat, vol);
 	}
