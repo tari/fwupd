@@ -7,6 +7,14 @@ Plugin=flashrom
 Plugin=flashrom
 VersionFormat=quad
 
+# Starlabs LabTop III
+[013b60e5-1023-5bee-8ae5-14cae21377b7]
+Plugin=flashrom
+
+# Starlabs LabTop III (AMI)
+[a20caf4c-3ed8-531c-b59a-eb079ab5e65e]
+PciBcrAddr = 0x0
+
 # Starlabs LabTop L4
 [baf1d04e-fd16-5e6a-93cc-1c23d171f879]
 Plugin=flashrom
