@@ -355,9 +355,9 @@ else
 endif
 
 if build_standalone and get_option('plugin_uefi_capsule')
-  cairo = dependency('cairo')
-  fontconfig = cc.find_library('fontconfig')
-  freetype = cc.find_library('freetype')
+  cairo = dependency('cairo', native: true)
+  fontconfig = cc.find_library('fontconfig', native: true)
+  freetype = cc.find_library('freetype', native: true)
   efiboot = dependency('efiboot')
   objcopy = find_program ('objcopy')
   genpeimg = find_program ('genpeimg', required: false)
