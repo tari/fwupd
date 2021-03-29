@@ -1226,23 +1226,8 @@ fu_util_prompt_for_release (FuUtilPrivate *priv, GPtrArray *rels, GError **error
 	/* TRANSLATORS: this is to abort the interactive prompt */
 	g_print ("0.\t%s\n", _("Cancel"));
 	for (guint i = 0; i < rels->len; i++) {
-		const gchar *desc_tmp;
-		g_autofree gchar *desc = NULL;
-
-		rel = g_ptr_array_index (rels, i);
-
-		/* no description provided */
-		desc_tmp = fwupd_release_get_description (rel);
-		if (desc_tmp == NULL) {
-			g_print ("%u.\t%s\n", i + 1, fwupd_release_get_version (rel));
-			continue;
-		}
-
-		/* remove markup, and fall back if we fail */
-		desc = fu_util_convert_description (desc_tmp, NULL);
-		if (desc == NULL)
-			desc = g_strdup (desc_tmp);
-		g_print ("%u.\t%s (%s)\n", i + 1, fwupd_release_get_version (rel), desc);
+		FwupdRelease *rel_tmp = g_ptr_array_index (rels, i);
+		g_print ("%u.\t%s\n", i + 1, fwupd_release_get_version (rel_tmp));
 	}
 	idx = fu_util_prompt_for_number (rels->len);
 	if (idx == 0) {
@@ -1477,7 +1462,7 @@ fu_util_update_device_with_release (FuUtilPrivate *priv,
 				    GError **error)
 {
 	if (!priv->no_safety_check && !priv->assume_yes) {
-		if (!fu_util_prompt_warning (dev,
+		if (!fu_util_prompt_warning (dev, rel,
 					     fu_util_get_tree_title (priv),
 					     error))
 			return FALSE;
@@ -1534,7 +1519,6 @@ fu_util_update_all (FuUtilPrivate *priv, GError **error)
 		FwupdDevice *dev = g_ptr_array_index (devices, i);
 		FwupdRelease *rel;
 		const gchar *remote_id;
-		g_autofree gchar *upgrade_str = NULL;
 		g_autoptr(GPtrArray) rels = NULL;
 		g_autoptr(GError) error_local = NULL;
 
@@ -1570,13 +1554,6 @@ fu_util_update_all (FuUtilPrivate *priv, GError **error)
 			continue;
 		}
 		rel = g_ptr_array_index (rels, 0);
-		/* TRANSLATORS: message letting the user know an upgrade is available
-		 * %1 is the device name and %2 and %3 are version strings */
-		upgrade_str = g_strdup_printf (_("Upgrade available for %s from %s to %s"),
-					       fwupd_device_get_name (dev),
-					       fwupd_device_get_version (dev),
-					       fwupd_release_get_version (rel));
-		g_print ("%s\n", upgrade_str);
 		if (!fu_util_update_device_with_release (priv, dev, rel, error))
 			return FALSE;
 
