@@ -5,4 +5,4 @@ Plugin = realtek_mst
 [REALTEK-MST\Name_10EC2142:00]
 Name = RTD2142
 VendorId = PCI:0x10ec
-RealtekMstDpAuxName = DPDDC-B
+RealtekMstDpAuxName = DPDDC-C

@@ -4,9 +4,13 @@
  * SPDX-License-Identifier: LGPL-2.1+
  */
 
-#include "config.h"
+#include <fcntl.h>
+#include <glib/gstdio.h>
+#include <linux/i2c-dev.h>
 
+#include "config.h"
 #include "fu-realtek-mst-device.h"
+#include "rtd2142.h"
 
 struct _FuRealtekMstDevice {
   FuUdevDevice parent_instance;
@@ -144,7 +148,101 @@ fu_realtek_mst_device_probe (FuDevice *device, GError **error)
 	if ((self->bus_device = fu_realtek_mst_device_locate_bus (self, error)) == NULL)
 		return FALSE;
 
-	/* TODO: probe version in ->setup */
+	return TRUE;
+}
+
+static gboolean
+fu_realtek_mst_device_open (FuDevice *device, GError **error)
+{
+	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
+	const gchar *bus_path = fu_udev_device_get_device_file (self->bus_device);
+	gint bus_fd;
+
+	/* open the bus and not self */
+	if ((bus_fd = g_open (bus_path, O_RDWR)) == -1) {
+		g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+			"failed to open %s", bus_path);
+		return FALSE;
+	}
+	fu_udev_device_set_fd (FU_UDEV_DEVICE (self), bus_fd);
+	fu_udev_device_set_flags (FU_UDEV_DEVICE (device),
+				  FU_UDEV_DEVICE_FLAG_NONE);
+	g_debug ("bus opened");
+
+	return FU_DEVICE_CLASS (fu_realtek_mst_device_parent_class)->open (device, error);
+}
+
+static gboolean
+fu_realtek_mst_device_setup (FuDevice *device, GError **error)
+{
+	FuUdevDevice *self = FU_UDEV_DEVICE (device);
+	gint bus_fd = fu_udev_device_get_fd (self);
+	g_autofree gchar *version_str = NULL;
+	guint8 active_bank;
+	const guint8 enter_ddcci_mode[] = {0xca, 0x09};
+	guint8 response[11];
+
+	g_return_val_if_fail(bus_fd != -1, FALSE);
+
+	/* set target address to device address */
+	if (!fu_udev_device_ioctl (self, I2C_SLAVE, (guint8 *) 0x35, NULL, error))
+		return FALSE;
+
+	/* switch to DDCCI mode */
+	if (!fu_udev_device_pwrite_full (self,
+					 0, enter_ddcci_mode,
+					 sizeof (enter_ddcci_mode),
+					 error))
+		return FALSE;
+	/*if (write (bus_fd, enter_ddcci_mode, sizeof (enter_ddcci_mode)) !=
+		sizeof (enter_ddcci_mode)) {
+		g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
+			     "failed to write mode switch command: %s",
+			     g_strerror (errno));
+		return FALSE;
+	}*/
+
+	/* wait for mode switch to complete */
+	g_usleep (200 * G_TIME_SPAN_MILLISECOND);
+
+	/* request dual bank state and read back */
+	if (!fu_udev_device_pwrite (self, 0, 0x01, error))
+		return FALSE;
+	if (!fu_udev_device_pread_full (self, 0, response, sizeof (response), error))
+		return FALSE;
+
+	/* validate response to ensure device is updateable: it must be in
+	 * dual-bank-diff firmware mode */
+	if (response[0] != 0xca || response[1] != 9) {
+		/* unexpected response code or length usually means the current
+		 * firmware doesn't support dual-bank mode at all */
+		g_debug ("not updatable with response code %#x, length %d",
+			 response[0], response[1]);
+		return TRUE;
+	}
+	if (response[2] != 1) {
+		g_debug ("dual-bank mode is not enabled");
+		return TRUE;
+	}
+	if (response[3] != 1) {
+		g_debug ("dual-bank mode must be 1, was %d", response[3]);
+		return TRUE;
+	}
+	/* dual-bank mode seems to be fully supported, so we can update */
+	fu_device_add_flag (device, FWUPD_DEVICE_FLAG_UPDATABLE);
+
+	/* TODO we'll need this value when programming */
+	active_bank = response[4];
+	g_debug ("device is currently running from bank %d", response[4]);
+	/* only user bank versions are reported, can't tell otherwise */
+	if (active_bank < 1 || active_bank > 2)
+		return TRUE;
+
+	version_str = g_strdup_printf ("%d.%d",
+				       response[4 + active_bank],
+				       response[5 + active_bank]);
+	fu_device_set_version (FU_DEVICE (self), version_str);
+
 	return TRUE;
 }
 
@@ -155,8 +253,8 @@ fu_realtek_mst_device_init (FuRealtekMstDevice *self)
 	self->dp_aux_dev_name = NULL;
 	self->bus_device = NULL;
 
-	fu_device_add_flag (device, FWUPD_DEVICE_FLAG_UPDATABLE);
 	fu_device_add_flag (device, FWUPD_DEVICE_FLAG_INTERNAL);
+	fu_device_add_flag (device, FWUPD_DEVICE_FLAG_DUAL_IMAGE);
 	fu_device_set_version_format (device, FWUPD_VERSION_FORMAT_PAIR);
 
 	fu_device_add_protocol (device, "com.realtek.rtd2142");
@@ -185,9 +283,9 @@ fu_realtek_mst_device_class_init (FuRealtekMstDeviceClass *klass)
 	klass_object->finalize = fu_realtek_mst_device_finalize;
 	klass_device->probe = fu_realtek_mst_device_probe;
 	klass_device->set_quirk_kv = fu_realtek_mst_device_set_quirk_kv;
+	klass_device->open = fu_realtek_mst_device_open;
+	klass_device->setup = fu_realtek_mst_device_setup;
 	/*
-	klass_device->open = fu_flashrom_lspcon_i2c_spi_device_open;
-	klass_device->setup = fu_flashrom_lspcon_i2c_spi_device_setup;
 	klass_device->write_firmware = fu_flashrom_lspcon_i2c_spi_device_write_firmware;
 	 */
 }
