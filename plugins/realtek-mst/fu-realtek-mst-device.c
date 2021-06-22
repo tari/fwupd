@@ -13,6 +13,9 @@
 #include "fu-hwids.h"
 #include "fu-realtek-mst-device.h"
 
+#define I2C_ADDR_PROBE 0x35
+#define I2C_ADDR_FLASH 0x4a
+
 /* some kind of operation attribute bits */
 #define REG_CMD_ATTR 0x60
 /* write set to begin executing, cleared when done */
@@ -39,7 +42,7 @@
 #define MCU_MODE_ISP (1 << 7)
 /* write set to begin write, reset by device when complete */
 #define MCU_MODE_WRITE_BUSY (1 << 5)
-/* when bit is set, write buffer contains data */
+/* when bit is clear, write buffer contains data */
 #define MCU_MODE_WRITE_BUF (1 << 4)
 
 /* write data into write buffer */
@@ -181,6 +184,13 @@ static FuUdevDevice *fu_realtek_mst_device_locate_bus (FuRealtekMstDevice *self,
 		return NULL;
 	}
 	return g_steal_pointer (&bus_device);
+}
+
+static gboolean
+mst_ensure_device_address (FuRealtekMstDevice *self, guint8 address, GError **error)
+{
+	return fu_udev_device_ioctl (FU_UDEV_DEVICE (self), I2C_SLAVE,
+				     (guint8 *) address, NULL, error);
 }
 
 /** Write a value to a device register */
@@ -387,11 +397,6 @@ fu_realtek_mst_device_open (FuDevice *device, GError **error)
 				  FU_UDEV_DEVICE_FLAG_NONE);
 	g_debug ("bus opened");
 
-	/* set target address to device address */
-	if (!fu_udev_device_ioctl (FU_UDEV_DEVICE (self), I2C_SLAVE,
-				   (guint8 *) 0x35, NULL, error))
-		return FALSE;
-
 	return FU_DEVICE_CLASS (fu_realtek_mst_device_parent_class)->open (device, error);
 }
 
@@ -402,6 +407,9 @@ fu_realtek_mst_device_get_dual_bank_info (FuRealtekMstDevice *self,
 {
 	FuUdevDevice *device = FU_UDEV_DEVICE (self);
 	guint8 response[11];
+
+	if (!mst_ensure_device_address (self, I2C_ADDR_PROBE, error))
+		return FALSE;
 
 	/* switch to DDCCI mode */
 	if (!mst_write_register (self, 0xca, 0x09, error))
@@ -634,8 +642,10 @@ flash_iface_write (FuRealtekMstDevice *self, guint32 address,
 		if (!mst_write_register (self, REG_CMD_ADDR_LO, address, error))
 			return FALSE;
 		/* ensure write buffer is empty */
-		if (!mst_poll_register (self, REG_MCU_MODE, MCU_MODE_WRITE_BUF, 0, 10, error))
+		if (!mst_poll_register (self, REG_MCU_MODE, MCU_MODE_WRITE_BUF, MCU_MODE_WRITE_BUF, 10, error)) {
+			g_prefix_error (error, "failed waiting for write buffer to clear: ");
 			return FALSE;
+		}
 		/* write data into FIFO */
 		if (!mst_write_register_multi (self, REG_WRITE_FIFO, data_bytes, chunk_size, error))
 			return FALSE;
@@ -662,6 +672,8 @@ static gboolean
 fu_realtek_mst_device_detach (FuDevice *device, GError **error)
 {
 	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
+	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+		return FALSE;
 
 	/* Switch to programming mode (stops regular operation) */
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_RESTART);
@@ -700,6 +712,9 @@ fu_realtek_mst_device_write_firmware (FuDevice *device,
 	g_autofree guint8 *readback_buf = NULL;
 	const guint8 flag_data[] = {0xaa, 0xaa, 0xaa, 0xff, 0xff};
 	g_return_val_if_fail(g_bytes_get_size (firmware_bytes) == FLASH_USER_SIZE, FALSE);
+
+	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+		return FALSE;
 
 	/* erase old image */
 	g_debug ("erase old image from %#x", base_addr);
@@ -757,6 +772,8 @@ fu_realtek_mst_device_read_firmware (FuDevice *device, GError **error)
 	}
 
 	image_bytes = g_malloc (FLASH_USER_SIZE);
+	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+		return FALSE;
 	if (!flash_iface_read (self, bank_address, image_bytes, FLASH_USER_SIZE, error))
 		return NULL;
 	return fu_firmware_new_from_bytes(g_bytes_new_take (g_steal_pointer (&image_bytes), FLASH_USER_SIZE));
@@ -768,6 +785,8 @@ fu_realtek_mst_device_dump_firmware (FuDevice *device, GError **error)
 	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
 	g_autofree void *flash_contents = g_malloc(FLASH_SIZE);
 
+	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+		return FALSE;
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_READ);
 	if (!flash_iface_read (self, 0, flash_contents, FLASH_SIZE, error))
 		return NULL;
@@ -781,6 +800,9 @@ fu_realtek_mst_device_attach (FuDevice *device, GError **error)
 {
 	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
 	guint8 value;
+
+	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+		return FALSE;
 
 	/* re-enable hardware write protect via GPIO */
 	if (!mst_set_gpio88 (self, 0, error))
