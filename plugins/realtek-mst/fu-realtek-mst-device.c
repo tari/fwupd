@@ -13,26 +13,31 @@
 #include "fu-hwids.h"
 #include "fu-realtek-mst-device.h"
 
-#define I2C_ADDR_PROBE 0x35
-#define I2C_ADDR_FLASH 0x4a
+/* firmware debug address */
+#define I2C_ADDR_DEBUG 0x35
+/* programming address */
+#define I2C_ADDR_ISP 0x4a
 
 /* some kind of operation attribute bits */
 #define REG_CMD_ATTR 0x60
 /* write set to begin executing, cleared when done */
 #define CMD_ERASE_BUSY 0x01
 
-#define REG_ERASE_OPCODE 0x61
-#define CMD_OPCODE_ERASE_SECTOR 0x20
-#define CMD_OPCODE_ERASE_BLOCK 0xD8
-
 /* 24-bit address for commands */
 #define REG_CMD_ADDR_HI 0x64
 #define REG_CMD_ADDR_MID 0x65
 #define REG_CMD_ADDR_LO 0x66
 
+/* register for erase commands */
+#define REG_ERASE_OPCODE 0x61
+#define CMD_OPCODE_ERASE_SECTOR 0x20
+#define CMD_OPCODE_ERASE_BLOCK 0xD8
+
+/* register for read commands */
 #define REG_READ_OPCODE 0x6A
 #define CMD_OPCODE_READ 0x03
 
+/* register for write commands */
 #define REG_WRITE_OPCODE 0x6D
 #define CMD_OPCODE_WRITE 0x02
 
@@ -47,10 +52,8 @@
 
 /* write data into write buffer */
 #define REG_WRITE_FIFO 0x70
-
 /* number of bytes to write minus 1 (0xff means 256 bytes) */
 #define REG_WRITE_LEN 0x71
-
 
 /* Indirect registers allow access to registers with 16-bit addresses. Write
  * 0x9F to the LO register, then the top byte of the address to HI, the
@@ -59,31 +62,37 @@
 #define REG_INDIRECT_LO 0xF4
 #define REG_INDIRECT_HI 0xF5
 
+/* GPIO configuration/access registers */
 #define REG_GPIO88_CONFIG 0x104F
 #define REG_GPIO88_VALUE 0xFE3F
 
-enum dual_bank_mode {
-	DUAL_BANK_USER_ONLY = 0,
-	DUAL_BANK_DIFF = 1,
-	DUAL_BANK_COPY = 2,
-	DUAL_BANK_USER_ONLY_FLAG = 3,
-	DUAL_BANK_MAX_VALUE = 3,
-};
-
-enum flash_bank {
-	FLASH_BANK_BOOT = 0,
-	FLASH_BANK_USER1 = 1,
-	FLASH_BANK_USER2 = 2,
-	FLASH_BANK_MAX_VALUE = 2,
-	FLASH_BANK_INVALID = 255,
-};
-
+/* flash chip properties */
 #define FLASH_SIZE 0x100000
+#define FLASH_SECTOR_SIZE 4096
+#define FLASH_BLOCK_SIZE 65536
+
+/* MST flash layout */
 #define FLASH_USER1_ADDR 0x10000
 #define FLASH_FLAG1_ADDR 0xfe304
 #define FLASH_USER2_ADDR 0x80000
 #define FLASH_FLAG2_ADDR 0xff304
 #define FLASH_USER_SIZE 0x70000
+
+enum dual_bank_mode {
+  DUAL_BANK_USER_ONLY = 0,
+  DUAL_BANK_DIFF = 1,
+  DUAL_BANK_COPY = 2,
+  DUAL_BANK_USER_ONLY_FLAG = 3,
+  DUAL_BANK_MAX_VALUE = 3,
+};
+
+enum flash_bank {
+  FLASH_BANK_BOOT = 0,
+  FLASH_BANK_USER1 = 1,
+  FLASH_BANK_USER2 = 2,
+  FLASH_BANK_MAX_VALUE = 2,
+  FLASH_BANK_INVALID = 255,
+};
 
 struct dual_bank_info {
 	gboolean is_enabled;
@@ -408,7 +417,7 @@ fu_realtek_mst_device_get_dual_bank_info (FuRealtekMstDevice *self,
 	FuUdevDevice *device = FU_UDEV_DEVICE (self);
 	guint8 response[11];
 
-	if (!mst_ensure_device_address (self, I2C_ADDR_PROBE, error))
+	if (!mst_ensure_device_address (self, I2C_ADDR_DEBUG, error))
 		return FALSE;
 
 	/* switch to DDCCI mode */
@@ -561,16 +570,13 @@ flash_iface_read (FuRealtekMstDevice *self,
 	return TRUE;
 }
 
-static const guint32 SECTOR_SIZE = 4096;
-static const guint32 BLOCK_SIZE = 65536;
-
 static gboolean
 flash_iface_erase_sector (FuRealtekMstDevice *self, guint32 address,
 			  GError **error)
 {
 	/* address must be 4k-aligned */
 	g_return_val_if_fail((address & 0xFFF) == 0, FALSE);
-	g_debug ("sector erase %#08x-%#08x", address, address + SECTOR_SIZE);
+	g_debug ("sector erase %#08x-%#08x", address, address + FLASH_SECTOR_SIZE);
 
 	/* sector address */
 	if (!mst_write_register (self, REG_CMD_ADDR_HI, address >> 16, error))
@@ -595,7 +601,7 @@ flash_iface_erase_block (FuRealtekMstDevice *self, guint32 address, GError **err
 {
 	/* address must be 64k-aligned */
 	g_return_val_if_fail((address & 0xFFFF) == 0, FALSE);
-	g_debug ("block erase %#08x-%#08x", address, address + BLOCK_SIZE);
+	g_debug ("block erase %#08x-%#08x", address, address + FLASH_BLOCK_SIZE);
 
 	/* block address */
 	if (!mst_write_register (self, REG_CMD_ADDR_HI, address >> 16, error))
@@ -629,7 +635,7 @@ flash_iface_write (FuRealtekMstDevice *self, guint32 address,
 	while (remaining_size > 0) {
 		gsize chunk_size = remaining_size > 256 ? 256 : remaining_size;
 		/* write opcode */
-		if (!mst_write_register (self, REG_WRITE_OPCODE, 0x02, error))
+		if (!mst_write_register (self, REG_WRITE_OPCODE, CMD_OPCODE_WRITE, error))
 			return FALSE;
 		/* write length */
 		if (!mst_write_register (self, REG_WRITE_LEN, chunk_size - 1, error))
@@ -672,7 +678,7 @@ static gboolean
 fu_realtek_mst_device_detach (FuDevice *device, GError **error)
 {
 	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
-	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+	if (!mst_ensure_device_address (self, I2C_ADDR_ISP, error))
 		return FALSE;
 
 	/* Switch to programming mode (stops regular operation) */
@@ -709,17 +715,17 @@ fu_realtek_mst_device_write_firmware (FuDevice *device,
 	guint32 base_addr = self->active_bank == FLASH_BANK_USER1 ? FLASH_USER2_ADDR : FLASH_USER1_ADDR;
 	guint32 flag_addr = self->active_bank == FLASH_BANK_USER1 ? FLASH_FLAG2_ADDR : FLASH_FLAG1_ADDR;
 	GBytes *firmware_bytes = fu_firmware_get_bytes (firmware, error);
-	g_autofree guint8 *readback_buf = NULL;
+	g_autofree guint8 *readback_buf = g_malloc (FLASH_USER_SIZE);
 	const guint8 flag_data[] = {0xaa, 0xaa, 0xaa, 0xff, 0xff};
 	g_return_val_if_fail(g_bytes_get_size (firmware_bytes) == FLASH_USER_SIZE, FALSE);
 
-	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+	if (!mst_ensure_device_address (self, I2C_ADDR_ISP, error))
 		return FALSE;
 
 	/* erase old image */
 	g_debug ("erase old image from %#x", base_addr);
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_ERASE);
-	for (guint32 offset = 0; offset < FLASH_USER_SIZE; offset += FLASH_USER_SIZE) {
+	for (guint32 offset = 0; offset < FLASH_USER_SIZE; offset += FLASH_BLOCK_SIZE) {
 		fu_device_set_progress_full (device, offset, FLASH_USER_SIZE);
 		if (!flash_iface_erase_block (self, base_addr + offset, error))
 			return FALSE;
@@ -732,7 +738,6 @@ fu_realtek_mst_device_write_firmware (FuDevice *device,
 		return FALSE;
 
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_VERIFY);
-	readback_buf = g_malloc (FLASH_USER_SIZE);
 	if (!flash_iface_read (self, base_addr, readback_buf, FLASH_USER_SIZE, error))
 		return FALSE;
 	if (memcmp (g_bytes_get_data (firmware_bytes, NULL), readback_buf, FLASH_USER_SIZE) != 0) {
@@ -745,7 +750,7 @@ fu_realtek_mst_device_write_firmware (FuDevice *device,
 	 * flag value once booted, so we always write the same value here and
 	 * it picks up what we've updated. */
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_ERASE);
-	if (!flash_iface_erase_sector (self, flag_addr & ~(SECTOR_SIZE - 1), error))
+	if (!flash_iface_erase_sector (self, flag_addr & ~(FLASH_SECTOR_SIZE - 1), error))
 		return FALSE;
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_WRITE);
 	return flash_iface_write (self, flag_addr,
@@ -772,7 +777,7 @@ fu_realtek_mst_device_read_firmware (FuDevice *device, GError **error)
 	}
 
 	image_bytes = g_malloc (FLASH_USER_SIZE);
-	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+	if (!mst_ensure_device_address (self, I2C_ADDR_ISP, error))
 		return FALSE;
 	if (!flash_iface_read (self, bank_address, image_bytes, FLASH_USER_SIZE, error))
 		return NULL;
@@ -785,7 +790,7 @@ fu_realtek_mst_device_dump_firmware (FuDevice *device, GError **error)
 	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
 	g_autofree void *flash_contents = g_malloc(FLASH_SIZE);
 
-	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+	if (!mst_ensure_device_address (self, I2C_ADDR_ISP, error))
 		return FALSE;
 	fu_device_set_status (device, FWUPD_STATUS_DEVICE_READ);
 	if (!flash_iface_read (self, 0, flash_contents, FLASH_SIZE, error))
@@ -801,7 +806,7 @@ fu_realtek_mst_device_attach (FuDevice *device, GError **error)
 	FuRealtekMstDevice *self = FU_REALTEK_MST_DEVICE (device);
 	guint8 value;
 
-	if (!mst_ensure_device_address (self, I2C_ADDR_FLASH, error))
+	if (!mst_ensure_device_address (self, I2C_ADDR_ISP, error))
 		return FALSE;
 
 	/* re-enable hardware write protect via GPIO */
